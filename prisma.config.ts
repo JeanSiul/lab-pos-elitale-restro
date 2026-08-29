@@ -3,12 +3,17 @@
 import "dotenv/config";
 import { defineConfig } from "prisma/config";
 
+const benchmarkFallbackUrl =
+  "postgresql://benchmark:benchmark@127.0.0.1:5432/benchmark";
+
 export default defineConfig({
   schema: "prisma/schema.prisma",
   migrations: {
     path: "prisma/migrations",
   },
   datasource: {
-    url: process.env["DATABASE_URL"],
+    // Prisma generate only needs a syntactically valid URL during the Vercel build.
+    // Runtime data screens still require a real DATABASE_URL.
+    url: process.env["DATABASE_URL"] || benchmarkFallbackUrl,
   },
 });

@@ -1,0 +1,692 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  MANAGER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum GstRegistrationType {
+  REGULAR
+  COMPOSITION
+  UNREGISTERED
+}
+
+enum MenuItemType {
+  SERVED
+  PACKAGED_GOODS
+}
+
+enum DietaryType {
+  VEG
+  NON_VEG
+  EGG
+}
+
+enum Disable86Reason {
+  OUT_OF_STOCK
+  QUALITY
+  PREP_TIME
+  OTHER
+}
+
+enum OrderType {
+  DINE_IN
+  TAKEAWAY
+  DELIVERY
+}
+
+enum OrderStatus {
+  OPEN
+  COMPLETED
+  VOID
+}
+
+enum OrderLineState {
+  UNSENT
+  FIRED
+  PREPARING
+  PREPARED
+  SERVED
+  VOID
+}
+
+enum PaymentMode {
+  CASH
+  UPI
+  CARD
+  OTHER
+}
+
+enum DiscountType {
+  NONE
+  PERCENT
+  FLAT
+}
+
+/// Who placed an order line: restaurant STAFF (waiter/POS) or a guest via the
+/// public self-order page (`/order/[username]`).
+enum OrderSource {
+  STAFF
+  SELF_ORDER
+}
+
+/// Restaurant manager / operator account.
+/// Phone number is the primary identifier used to sign in; email is optional
+/// and can be added later for notifications (Resend).
+model User {
+  id              String    @id @default(cuid())
+  phone           String    @unique
+  phoneVerifiedAt DateTime?
+  email           String?   @unique
+  emailVerifiedAt DateTime?
+  name            String?
+  role            UserRole  @default(MANAGER)
+  isActive        Boolean   @default(true)
+  suspendedAt     DateTime?
+  deletedAt       DateTime?
+
+  // Optional sign-in PIN (scrypt-hashed) — an alternative to the SMS OTP.
+  pinHash           String?
+  pinUpdatedAt      DateTime?
+  pinFailedAttempts Int       @default(0)
+  pinLockedUntil    DateTime?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  ownedRestaurants Restaurant[] @relation("RestaurantOwner")
+
+  @@index([role])
+}
+
+/// A restaurant onboarded onto the platform, owned by a manager (User).
+enum RestaurantFormat {
+  FINE_DINING
+  CASUAL_DINING
+  QSR
+  CAFE
+  CLOUD_KITCHEN
+  BAR
+  BAKERY
+  FOOD_TRUCK
+  OTHER
+}
+
+model Restaurant {
+  id          String    @id @default(cuid())
+  name        String
+  slug        String    @unique
+  username    String?   @unique
+  email       String?
+  phone       String?
+  city        String?
+  country     String    @default("IN")
+  timezone    String?
+
+  // GST / tax profile (opt-in; drives the correct default tax at billing time)
+  gstRegistrationType GstRegistrationType @default(UNREGISTERED)
+  serviceGstRate      Decimal?            @db.Decimal(5, 2)
+  pricesTaxInclusive  Boolean             @default(false)
+  gstin               String?
+  sacCode             String?             @default("996331")
+  nextInvoiceSeq      Int                 @default(1)
+
+  // Business / brand profile
+  legalName        String?
+  tagline          String?
+  brandColor       String?
+  logoUrl          String?
+  coverUrl         String?
+  addressLine1     String?
+  addressLine2     String?
+  state            String?
+  postalCode       String?
+  latitude         Float?
+  longitude        Float?
+  website          String?
+  instagramUrl     String?
+  facebookUrl      String?
+  googleUrl        String?
+  restaurantFormat RestaurantFormat?
+  cuisines         String[]           @default([])
+  seatingCapacity  Int?
+  fssaiLicense     String?
+  fssaiExpiry      DateTime?
+  panNumber        String?
+  serviceDineIn    Boolean            @default(true)
+  serviceTakeaway  Boolean            @default(true)
+  serviceDelivery  Boolean            @default(false)
+  defaultOrderType OrderType          @default(TAKEAWAY)
+  businessHours    Json?
+
+  // Public guest self-ordering (`/order/[username]`); off until the owner opts in.
+  selfOrderEnabled Boolean            @default(false)
+
+  // Custom note printed at the foot of the invoice/bill (owner-editable).
+  invoiceFooterNote String?
+
+  isActive    Boolean   @default(true)
+  onboardedAt DateTime  @default(now())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  ownerId String
+  owner   User   @relation("RestaurantOwner", fields: [ownerId], references: [id])
+
+  categories     MenuCategory[]
+  menuItems      MenuItem[]
+  modifierGroups ModifierGroup[]
+  orders         Order[]
+  tables         DiningTable[]
+  images         RestaurantImage[]
+  videos         RestaurantVideo[]
+  stockItems     StockItem[]
+  staff          Staff[]
+
+  @@index([ownerId])
+  @@index([isActive])
+}
+
+/// A restaurant gallery image (Supabase Storage). Logo/cover are columns on
+/// Restaurant; these are the extra showcase photos.
+model RestaurantImage {
+  id           String     @id @default(cuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  url          String
+  storageKey   String
+  sortOrder    Int        @default(0)
+  createdAt    DateTime   @default(now())
+
+  @@index([restaurantId])
+}
+
+enum VideoKind {
+  LINK
+  FILE
+}
+
+/// A restaurant showcase video — either an external LINK (YouTube/Instagram/
+/// Vimeo) or an uploaded FILE in Supabase Storage. Profile-only (never on bills).
+model RestaurantVideo {
+  id           String     @id @default(cuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  kind         VideoKind
+  url          String
+  storageKey   String?
+  caption      String?
+  sortOrder    Int        @default(0)
+  createdAt    DateTime   @default(now())
+
+  @@index([restaurantId])
+}
+
+/// One-time passcode challenge for phone (SMS) login. Codes are stored hashed.
+model OtpChallenge {
+  id         String    @id @default(cuid())
+  phone      String
+  codeHash   String
+  expiresAt  DateTime
+  attempts   Int       @default(0)
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([phone])
+}
+
+/// A menu section (Starters, Mains, Beverages…). Owned by a Restaurant.
+model MenuCategory {
+  id           String    @id @default(cuid())
+  restaurantId String
+  name         String
+  description  String?
+  sortOrder    Int       @default(0)
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id])
+  items      MenuItem[]
+
+  @@unique([restaurantId, name])
+  @@index([restaurantId])
+}
+
+/// A sellable menu item. `price` is the base/default; variants (if any) are the
+/// sellable units. Tax is resolved from the Restaurant profile unless the item
+/// is PACKAGED_GOODS with its own goodsGstRate.
+model MenuItem {
+  id                String       @id @default(cuid())
+  restaurantId      String
+  categoryId        String
+  name              String
+  shortDescription  String?
+  longDescription   String?
+  itemType          MenuItemType @default(SERVED)
+  dietaryType       DietaryType?
+  price             Decimal      @db.Decimal(10, 2)
+  priceTaxInclusive Boolean?
+  goodsGstRate      Decimal?     @db.Decimal(5, 2)
+  hsnSacCode        String?
+  sortOrder         Int          @default(0)
+  isActive          Boolean      @default(true)
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  deletedAt         DateTime?
+
+  restaurant     Restaurant              @relation(fields: [restaurantId], references: [id])
+  category       MenuCategory            @relation(fields: [categoryId], references: [id])
+  images         MenuItemImage[]
+  disables       MenuItemAvailability[]
+  variants       MenuItemVariant[]
+  modifierGroups MenuItemModifierGroup[]
+  recipe         RecipeComponent[]
+
+  @@index([restaurantId])
+  @@index([categoryId])
+}
+
+/// Uploaded photo for a menu item (stored in Supabase Storage).
+model MenuItemImage {
+  id         String   @id @default(cuid())
+  menuItemId String
+  url        String
+  storageKey String
+  isPrimary  Boolean  @default(false)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  menuItem MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+
+  @@index([menuItemId])
+}
+
+/// A time-boxed "86" (disable) event for an item; also the availability audit log.
+model MenuItemAvailability {
+  id            String          @id @default(cuid())
+  menuItemId    String
+  reason        Disable86Reason
+  note          String?
+  disabledById  String
+  disabledAt    DateTime        @default(now())
+  resumeAt      DateTime?
+  reenabledAt   DateTime?
+  reenabledById String?
+
+  menuItem MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+
+  @@index([menuItemId])
+}
+
+/// A size/portion variant of an item (Half/Full, S/M/L) with its own price.
+model MenuItemVariant {
+  id         String    @id @default(cuid())
+  menuItemId String
+  name       String
+  price      Decimal   @db.Decimal(10, 2)
+  sortOrder  Int       @default(0)
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+
+  menuItem MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+
+  @@index([menuItemId])
+}
+
+/// A reusable group of add-ons ("Milk", "Add-ons") attachable to many items.
+model ModifierGroup {
+  id           String    @id @default(cuid())
+  restaurantId String
+  name         String
+  minSelect    Int       @default(0)
+  maxSelect    Int       @default(1)
+  isRequired   Boolean   @default(false)
+  sortOrder    Int       @default(0)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  restaurant Restaurant              @relation(fields: [restaurantId], references: [id])
+  modifiers  Modifier[]
+  items      MenuItemModifierGroup[]
+
+  @@index([restaurantId])
+}
+
+/// A single add-on option within a ModifierGroup, with a price delta.
+model Modifier {
+  id         String   @id @default(cuid())
+  groupId    String
+  name       String
+  priceDelta Decimal  @default(0) @db.Decimal(10, 2)
+  sortOrder  Int      @default(0)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  group ModifierGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([groupId])
+}
+
+/// Join: which modifier groups apply to which items (groups are reusable).
+model MenuItemModifierGroup {
+  menuItemId      String
+  modifierGroupId String
+  sortOrder       Int    @default(0)
+
+  menuItem      MenuItem      @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  modifierGroup ModifierGroup @relation(fields: [modifierGroupId], references: [id], onDelete: Cascade)
+
+  @@id([menuItemId, modifierGroupId])
+  @@index([modifierGroupId])
+}
+
+/// A physical dining table the floor seats guests at. Owned by a Restaurant.
+/// Soft-deleted (never hard-removed) so historical orders keep their link.
+model DiningTable {
+  id           String     @id @default(cuid())
+  restaurantId String
+  label        String
+  seats        Int?
+  section      String?
+  sortOrder    Int        @default(0)
+  isActive     Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  deletedAt    DateTime?
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id])
+  orders     Order[]
+
+  @@unique([restaurantId, label])
+  @@index([restaurantId])
+}
+
+/// A customer order (takeaway / dine-in tab / manual delivery). Stays OPEN and
+/// mutable until settled; lines snapshot price + tax so old bills never change.
+model Order {
+  id              String       @id @default(cuid())
+  restaurantId    String
+  orderNumber     Int
+  invoiceNumber   Int?
+  idempotencyKey  String       @unique
+  orderType       OrderType    @default(TAKEAWAY)
+  status          OrderStatus  @default(OPEN)
+  tableLabel      String?
+  tableId         String?
+  customerName    String?
+  customerPhone   String?
+  customerAddress String?
+  note            String?
+
+  subtotal       Decimal      @default(0) @db.Decimal(10, 2)
+  taxTotal       Decimal      @default(0) @db.Decimal(10, 2)
+  discountType   DiscountType @default(NONE)
+  discountValue  Decimal      @default(0) @db.Decimal(10, 2)
+  discountReason String?
+  discountTotal  Decimal      @default(0) @db.Decimal(10, 2)
+  compTotal      Decimal      @default(0) @db.Decimal(10, 2)
+  roundOff       Decimal      @default(0) @db.Decimal(10, 2)
+  grandTotal     Decimal      @default(0) @db.Decimal(10, 2)
+
+  placedById      String?
+  placedByStaffId String?
+  voidedById String?
+  voidReason String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  settledAt  DateTime?
+  deletedAt  DateTime?
+
+  restaurant Restaurant  @relation(fields: [restaurantId], references: [id])
+  table      DiningTable? @relation(fields: [tableId], references: [id])
+  items      OrderItem[]
+  payments   Payment[]
+
+  @@unique([restaurantId, orderNumber])
+  @@index([restaurantId, status])
+  @@index([tableId])
+}
+
+/// One line on an order — fully snapshotted from the menu at add time.
+model OrderItem {
+  id           String         @id @default(cuid())
+  orderId      String
+  menuItemId   String?
+  variantId    String?
+  name         String
+  variantName  String?
+  unitPrice    Decimal        @db.Decimal(10, 2)
+  quantity     Int            @default(1)
+  lineNote     String?
+  taxRate      Decimal        @default(0) @db.Decimal(5, 2)
+  taxKind      String         @default("NONE")
+  taxInclusive Boolean        @default(false)
+  state        OrderLineState @default(UNSENT)
+  source       OrderSource    @default(STAFF)
+  isComp       Boolean        @default(false)
+  compReason   String?
+  firedAt      DateTime?
+  voidReason   String?
+  sortOrder    Int            @default(0)
+  createdAt    DateTime       @default(now())
+
+  order     Order               @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  modifiers OrderItemModifier[]
+
+  @@index([orderId])
+}
+
+/// A chosen add-on on an order line — snapshotted.
+model OrderItemModifier {
+  id          String  @id @default(cuid())
+  orderItemId String
+  modifierId  String?
+  name        String
+  priceDelta  Decimal @default(0) @db.Decimal(10, 2)
+
+  orderItem OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+
+  @@index([orderItemId])
+}
+
+/// A tender against an order (multi-tender supported).
+model Payment {
+  id           String      @id @default(cuid())
+  orderId      String
+  mode         PaymentMode
+  amount       Decimal     @db.Decimal(10, 2)
+  tendered     Decimal?    @db.Decimal(10, 2)
+  reference    String?
+  receivedById String?
+  createdAt    DateTime    @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+}
+
+enum StockUnit {
+  KG
+  GRAM
+  LITRE
+  ML
+  PIECE
+  PACK
+  BOTTLE
+  DOZEN
+}
+
+enum StockMovementType {
+  RECEIVE
+  WASTE
+  CORRECTION
+  SALE_DEPLETION
+}
+
+/// An inventory item the restaurant stocks. On-hand is the running total of
+/// typed StockMovements — never edited directly. Soft-deleted.
+model StockItem {
+  id           String    @id @default(cuid())
+  restaurantId String
+  name         String
+  unit         StockUnit
+  category     String?
+  onHand       Decimal   @default(0) @db.Decimal(12, 3)
+  reorderLevel Decimal?  @db.Decimal(12, 3)
+  parLevel     Decimal?  @db.Decimal(12, 3)
+  costPerUnit  Decimal?  @db.Decimal(12, 2)
+  supplier     String?
+  notes        String?
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  restaurant Restaurant        @relation(fields: [restaurantId], references: [id])
+  movements  StockMovement[]
+  usedIn     RecipeComponent[]
+
+  @@unique([restaurantId, name])
+  @@index([restaurantId])
+}
+
+/// An audited change to a StockItem's on-hand. Manual RECEIVE/WASTE/CORRECTION
+/// or SALE_DEPLETION (order placed = negative, void = positive).
+model StockMovement {
+  id              String            @id @default(cuid())
+  restaurantId    String
+  stockItemId     String
+  type            StockMovementType
+  quantity        Decimal           @db.Decimal(12, 3)
+  resultingOnHand Decimal           @db.Decimal(12, 3)
+  reason          String?
+  note            String?
+  orderId         String?
+  createdById     String?
+  createdAt       DateTime          @default(now())
+
+  stockItem StockItem @relation(fields: [stockItemId], references: [id])
+
+  @@index([stockItemId])
+  @@index([restaurantId, createdAt])
+  @@index([orderId])
+}
+
+/// One ingredient line of a MenuItem's recipe. quantity is in the stock item's
+/// unit. Placing an order depletes these; voiding restores them.
+model RecipeComponent {
+  id          String   @id @default(cuid())
+  menuItemId  String
+  stockItemId String
+  quantity    Decimal  @db.Decimal(12, 3)
+  createdAt   DateTime @default(now())
+
+  menuItem  MenuItem  @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  stockItem StockItem @relation(fields: [stockItemId], references: [id], onDelete: Cascade)
+
+  @@unique([menuItemId, stockItemId])
+  @@index([menuItemId])
+  @@index([stockItemId])
+}
+
+enum StaffRole {
+  WAITER
+  KITCHEN
+  MANAGEMENT
+}
+
+enum StaffStatus {
+  ACTIVE
+  ON_LEAVE
+  INACTIVE
+}
+
+enum EmploymentType {
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+/// A restaurant staff member (directory + POS PIN). Sensitive HR data (salary,
+/// bank, ID proof) is deliberately out of scope. PIN is stored hashed only.
+model Staff {
+  id                    String          @id @default(cuid())
+  restaurantId          String
+  employeeCode          String
+  name                  String
+  role                  StaffRole
+  status                StaffStatus     @default(ACTIVE)
+  photoUrl              String?
+  phone                 String
+  email                 String?
+  addressLine1          String?
+  addressLine2          String?
+  city                  String?
+  state                 String?
+  postalCode            String?
+  dateOfBirth           DateTime?
+  gender                Gender?
+  joiningDate           DateTime?
+  employmentType        EmploymentType?
+  emergencyContactName  String?
+  emergencyContactPhone String?
+  notes                 String?
+  pinHash               String
+  loginFailedAttempts   Int             @default(0)
+  loginLockedUntil      DateTime?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+  deletedAt             DateTime?
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id])
+
+  @@unique([restaurantId, employeeCode])
+  @@index([restaurantId])
+}
+
+/// A registered Expo push token for a mobile client device. One row per
+/// (subjectKind, subjectId, deviceId). Refreshed on every app-open — the
+/// server upserts by the unique triple.
+model PushToken {
+  id            String   @id @default(cuid())
+  subjectKind   String   // "manager" | "staff"
+  subjectId     String   // User.id or Staff.id (application-managed FK; polymorphic)
+  restaurantId  String?
+  deviceId      String
+  expoPushToken String
+  platform      String   // "ios" | "android"
+  appVersion    String
+  locale        String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([subjectKind, subjectId, deviceId])
+  @@index([subjectKind, subjectId])
+  @@index([restaurantId])
+}

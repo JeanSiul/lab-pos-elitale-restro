@@ -1,0 +1,54 @@
+name: Import ElitaleRestro benchmark
+
+on:
+  push:
+    paths:
+      - '.github/workflows/import-elitale-restro.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Import source cleanly
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          git clone --depth 1 https://github.com/elitale/restro.git "$tmp/src"
+
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
+
+          rm -rf "$tmp/src/.git" "$tmp/src/.github"
+          cp -a "$tmp/src/." .
+
+          cat > BENCHMARK_SOURCE.md <<'EOF'
+          # Benchmark source
+
+          Source: https://github.com/elitale/restro
+
+          This repository is an isolated benchmark copy for evaluating restaurant POS, KDS, table, inventory, QR-ordering, billing and staff workflows.
+
+          Upstream license: GNU AGPLv3. Keep this benchmark isolated from proprietary projects unless licensing obligations are explicitly reviewed and accepted.
+          EOF
+
+      - name: Commit imported benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+          git commit -m "chore: import ElitaleRestro benchmark"
+          git push origin HEAD:main

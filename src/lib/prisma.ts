@@ -2,11 +2,9 @@ import { PrismaPg } from "@prisma/adapter-pg";
 
 import { PrismaClient } from "@/generated/prisma/client";
 
-const connectionString = process.env.DATABASE_URL;
-
-if (!connectionString) {
-  throw new Error("DATABASE_URL is not set. Add it to your .env file.");
-}
+const connectionString =
+  process.env.DATABASE_URL ??
+  "postgresql://benchmark:benchmark@127.0.0.1:5432/benchmark";
 
 const createPrismaClient = (): PrismaClient =>
   new PrismaClient({ adapter: new PrismaPg({ connectionString }) });
